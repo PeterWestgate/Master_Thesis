@@ -1,8 +1,8 @@
 # Characterizing Visual Object Categorization through Spatial Arrangement and its Neural Correlates
 
-Analysis code for a master thesis combining a spatial arrangement behavioral experiment with fMRI-based Representational Similarity Analysis (RSA).
+Analysis code for the spatial arrangement behavioral experiment with fMRI-based Representational Similarity Analysis (RSA).
 
-**KU Leuven — Faculty of Psychology and Pedagogical Sciences, 2025–2026**
+**KU Leuven — Faculty of Psychology and Pedagogical Sciences, 2024–2026**
 
 ---
 
@@ -35,11 +35,6 @@ This study investigates how humans represent visual object categories, and where
     ├── results/                   # Summary statistics (CSV)
     └── figures/                   # Generated figures
 ```
-
-> **Note on data**: Per-participant neural RDMs (`models/subject_*/`) and raw behavioral trial data (`all_data/`, `data/`) are excluded from this repository to protect participant privacy. Summary-level outputs and average RDMs are included.
-
----
-
 ## Setup
 
 **Python 3.9+** is required. Install dependencies with:
@@ -97,12 +92,11 @@ All RSA correlations use **Pearson correlation** (*r*). The analysis pipeline:
 2. Per-participant *r* values are **Fisher z-transformed** before averaging.
 3. The mean is inverse-transformed back to *r* for reporting, alongside *SD* and *p*-values.
 
-### Partial and semi-partial correlations
+### Semi-partial correlations
 
 To isolate the unique contribution of each theoretical model to behavioral or neural similarity structure:
 
 - **Semi-partial correlation**: Correlate target RDM *Y* with the residuals of model *X₁* after regressing out control model *X₂*. Quantifies unique variance *X₁* explains in *Y*.
-- **Partial correlation**: Remove *X₂* from both *X₁* and *Y*. Quantifies the *X₁*–*Y* relationship after controlling for *X₂* in both.
 
 ### Image conditions (fMRI)
 
