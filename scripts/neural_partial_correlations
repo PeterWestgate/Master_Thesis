@@ -1,0 +1,224 @@
+import numpy as np
+import pandas as pd
+from scipy.stats import pearsonr
+from sklearn.linear_model import LinearRegression
+import os
+import sys
+
+# ==========================================
+# 1. CONFIGURATION: FILENAMES
+# ==========================================
+
+# We only list the filenames here. The script will find their paths automatically.
+MODEL_FILENAMES = {
+    'category': 'category40_model.tsv',
+    'animacy': 'animacy40_model.tsv',
+    'gist': 'gist40_model.tsv'
+}
+
+# List of ROI files to analyze
+ROI_FILENAMES = [
+    "L_Anterior_Cingulate_and_Medial_Prefrontal.tsv",
+    "L_Dorsal_Stream_Visual.tsv",
+    "L_Dorsolateral_Prefrontal.tsv",
+    "L_Early_Visual.tsv",
+    "L_Inferior_Frontal.tsv",
+    "L_Inferior_Parietal.tsv",
+    "L_Lateral_Temporal.tsv",
+    "L_Medial_Temporal.tsv",
+    "L_Orbital_and_Polar_Frontal.tsv",
+    "L_Primary_Visual.tsv",
+    "L_Somatosensory_and_Motor.tsv",
+    "L_Superior_Parietal.tsv",
+    "L_Ventral_Stream_Visual.tsv",
+    "R_Anterior_Cingulate_and_Medial_Prefrontal.tsv",
+    "R_Dorsal_Stream_Visual.tsv",
+    "R_Dorsolateral_Prefrontal.tsv",
+    "R_Early_Visual.tsv",
+    "R_Inferior_Frontal.tsv",
+    "R_Inferior_Parietal.tsv",
+    "R_Lateral_Temporal.tsv",
+    "R_Medial_Temporal.tsv",
+    "R_Orbital_and_Polar_Frontal.tsv",
+    "R_Primary_Visual.tsv",
+    "R_Somatosensory_and_Motor.tsv",
+    "R_Superior_Parietal.tsv",
+    "R_Ventral_Stream_Visual.tsv"
+]
+
+# ==========================================
+# 2. HELPER FUNCTIONS
+# ==========================================
+
+def get_upper_tri(rdm):
+    """Returns upper triangular values of a symmetric RDM."""
+    rdm = np.array(rdm)
+    if rdm.shape[0] != rdm.shape[1]:
+        raise ValueError(f"RDM must be square. Got {rdm.shape}")
+    n = rdm.shape[0]
+    tri_u_indices = np.triu_indices(n, k=1)
+    return rdm[tri_u_indices]
+
+def partial_corr(x, y, covar):
+    """Calculates partial correlation between x and y, controlling for covar."""
+    x = x.reshape(-1, 1)
+    y = y.reshape(-1, 1)
+    if covar.ndim == 1: covar = covar.reshape(-1, 1)
+    
+    # Regress out covariates
+    res_x = x - LinearRegression().fit(covar, x).predict(covar)
+    res_y = y - LinearRegression().fit(covar, y).predict(covar)
+    
+    # Correlate residuals
+    r, p = pearsonr(res_x.flatten(), res_y.flatten())
+    return r, p
+
+def find_file_in_project(filename, search_root):
+    """
+    Recursively searches for a file starting from the search_root directory.
+    """
+    for root, dirs, files in os.walk(search_root):
+        if filename in files:
+            return os.path.join(root, filename)
+    return None
+
+# ==========================================
+# 3. LOCATE FILES
+# ==========================================
+
+# Determine script location and project root (up one level)
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    script_dir = os.getcwd()
+
+project_root = os.path.dirname(script_dir)
+print(f"Searching for files in project root: {project_root}...\n")
+
+# Find Models
+model_paths = {}
+for key, fname in MODEL_FILENAMES.items():
+    path = find_file_in_project(fname, project_root)
+    if path:
+        model_paths[key] = path
+        print(f"[FOUND] Model {key}: {os.path.basename(path)}")
+    else:
+        print(f"[ERROR] Could not find model file: {fname}")
+        sys.exit(1)
+
+# Find ROIs
+roi_paths = []
+print(f"\nSearching for {len(ROI_FILENAMES)} ROI files...")
+for fname in ROI_FILENAMES:
+    path = find_file_in_project(fname, project_root)
+    if path:
+        roi_paths.append(path)
+    else:
+        print(f"[WARNING] Could not find ROI file: {fname}")
+
+if not roi_paths:
+    print("No ROI files found. Please check your folder structure.")
+    sys.exit(1)
+
+# ==========================================
+# 4. LOAD AND PROCESS MODELS
+# ==========================================
+print("\n--- Loading Model RDMs ---")
+models = {}
+for name, path in model_paths.items():
+    models[name] = pd.read_csv(path, sep='\t', index_col=0)
+
+# Vectorize models
+# Note: We use the category model's index as the "Target Order" for alignment
+target_index = models['category'].index
+target_columns = models['category'].columns
+
+# Reindex models to ensure they match each other (e.g. if gist is sorted differently)
+for name in models:
+    models[name] = models[name].reindex(index=target_index, columns=target_columns)
+    if models[name].isnull().values.any():
+         print(f"WARNING: NaN values in model {name} after alignment. Filling with 0.")
+         models[name] = models[name].fillna(0)
+
+vec_cat = get_upper_tri(models['category'])
+vec_ani = get_upper_tri(models['animacy'])
+vec_gist = get_upper_tri(models['gist'])
+
+# Prepare covariate stacks
+cov_cat = np.column_stack([vec_ani, vec_gist]) # Control for Animacy & Gist
+cov_ani = np.column_stack([vec_cat, vec_gist]) # Control for Category & Gist
+cov_gist = np.column_stack([vec_cat, vec_ani]) # Control for Category & Animacy
+
+# ==========================================
+# 5. MAIN ANALYSIS LOOP
+# ==========================================
+print("\n--- Processing Neural ROIs ---")
+results = []
+debug_printed = False
+
+for neural_path in roi_paths:
+    roi_name = os.path.basename(neural_path).replace('.tsv', '')
+    
+    try:
+        # Load Neural RDM
+        neural_df = pd.read_csv(neural_path, sep='\t', index_col=0)
+        
+        # --- DEBUGGING LABELS ---
+        # Clean whitespace just in case
+        neural_df.index = neural_df.index.astype(str).str.strip()
+        neural_df.columns = neural_df.columns.astype(str).str.strip()
+        
+        # Check intersection
+        common_labels = neural_df.index.intersection(target_index)
+        
+        if len(common_labels) < len(target_index):
+            print(f"SKIP {roi_name}: Labels do not match.")
+            if not debug_printed:
+                print("\n--- DEBUGGING LABEL MISMATCH (Showing first 5) ---")
+                print(f"Model Labels:  {target_index[:5].tolist()}")
+                print(f"Neural Labels: {neural_df.index[:5].tolist()}")
+                print("--------------------------------------------------\n")
+                debug_printed = True
+            continue
+            
+        # ALIGNMENT STEP: CRITICAL
+        # Reindex Neural RDM to match the exact order of the Model RDMs
+        neural_df = neural_df.reindex(index=target_index, columns=target_columns)
+        
+        # Vectorize
+        vec_neural = get_upper_tri(neural_df)
+        
+        # 1. Full Correlation (Category)
+        r_cat_full, _ = pearsonr(vec_neural, vec_cat)
+        
+        # 2. Partial Correlation (Category | Animacy, Gist)
+        r_cat_part, _ = partial_corr(vec_neural, vec_cat, cov_cat)
+        
+        # 3. Partial Correlation (Animacy | Category, Gist)
+        r_ani_part, _ = partial_corr(vec_neural, vec_ani, cov_ani)
+        
+        # 4. Partial Correlation (Gist | Category, Animacy)
+        r_gist_part, _ = partial_corr(vec_neural, vec_gist, cov_gist)
+        
+        results.append({
+            'ROI': roi_name,
+            'Cat_Full': r_cat_full,
+            'Cat_Partial': r_cat_part,
+            'Animacy_Partial': r_ani_part,
+            'Gist_Partial': r_gist_part
+        })
+        
+    except Exception as e:
+        print(f"Error processing {roi_name}: {e}")
+
+# ==========================================
+# 6. PRINT RESULTS TABLE
+# ==========================================
+print("\n" + "="*85)
+print(f"{'ROI Name':<45} | {'Cat(r)':<8} | {'Cat(par)':<8} | {'Ani(par)':<8} | {'Gist(par)':<8}")
+print("-" * 85)
+
+for res in results:
+    print(f"{res['ROI']:<45} | {res['Cat_Full']:.3f}    | {res['Cat_Partial']:.3f}    | {res['Animacy_Partial']:.3f}    | {res['Gist_Partial']:.3f}")
+
+print("="*85)

@@ -1,0 +1,176 @@
+import numpy as np
+import pandas as pd
+from scipy.stats import pearsonr
+from sklearn.linear_model import LinearRegression
+import os
+import sys
+
+# ==========================================
+# 1. HELPER FUNCTIONS
+# ==========================================
+
+def get_upper_tri(rdm):
+    """
+    Takes a symmetric RDM (N x N) and returns the upper triangular
+    values as a 1D vector (excluding the diagonal).
+    """
+    rdm = np.array(rdm)
+    if rdm.shape[0] != rdm.shape[1]:
+        raise ValueError("RDM must be a square matrix.")
+    n = rdm.shape[0]
+    tri_u_indices = np.triu_indices(n, k=1)
+    return rdm[tri_u_indices]
+
+def partial_corr(x, y, covar):
+    """
+    Calculates partial correlation between x and y, controlling for covariates (covar).
+    """
+    x = x.reshape(-1, 1)
+    y = y.reshape(-1, 1)
+    if covar.ndim == 1:
+        covar = covar.reshape(-1, 1)
+        
+    # Regress x on covariates to get residuals
+    model_x = LinearRegression().fit(covar, x)
+    res_x = x - model_x.predict(covar)
+    
+    # Regress y on covariates to get residuals
+    model_y = LinearRegression().fit(covar, y)
+    res_y = y - model_y.predict(covar)
+    
+    # Correlation of residuals
+    r, p = pearsonr(res_x.flatten(), res_y.flatten())
+    return r, p
+
+def find_file_in_project(filename, search_root):
+    """
+    Recursively searches for a file starting from the search_root directory.
+    Returns the full path if found, else None.
+    """
+    for root, dirs, files in os.walk(search_root):
+        if filename in files:
+            return os.path.join(root, filename)
+    return None
+
+# ==========================================
+# 2. LOCATE FILES AUTOMATICALLY
+# ==========================================
+
+# 1. Determine where this script is running
+try:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    script_dir = os.getcwd()
+
+# 2. Define the project root (Go up one level from 'partial_correlation' to 'for_peter')
+project_root = os.path.dirname(script_dir)
+
+print(f"Script location: {script_dir}")
+print(f"Project root (searching here): {project_root}")
+print("-" * 30)
+
+# 3. List of required filenames
+required_files = {
+    'behavioral': 'average_similarity_rdm.tsv',
+    'category': 'category80_model.tsv',
+    'animacy': 'animacy80_model.tsv',
+    'gist': 'gist80_model.tsv'
+}
+
+file_paths = {}
+
+# 4. Search for each file
+print("Searching for files...")
+missing_files = []
+for key, filename in required_files.items():
+    found_path = find_file_in_project(filename, project_root)
+    
+    if found_path:
+        file_paths[key] = found_path
+        print(f"[FOUND] {filename} -> {found_path}")
+    else:
+        missing_files.append(filename)
+        print(f"[MISSING] {filename}")
+
+if missing_files:
+    print("\nERROR: Could not find the following files anywhere in the 'for_peter' folder:")
+    for f in missing_files:
+        print(f" - {f}")
+    print("Please check that the files exist and the names are spelled correctly.")
+    sys.exit(1)
+
+# ==========================================
+# 3. LOAD AND ALIGN DATA
+# ==========================================
+
+print("\n--- Loading Data ---")
+
+data_frames = {}
+for key, filepath in file_paths.items():
+    # Load TSV, assuming first column is the index (labels)
+    df = pd.read_csv(filepath, sep='\t', index_col=0)
+    data_frames[key] = df
+
+# ALIGNMENT STEP
+# The Gist model might be sorted alphabetically (Banana, Bird...) while Behavior 
+# is sorted by cluster (Person, Cat...). We must align everything to Behavior.
+target_order = data_frames['behavioral'].index
+target_cols = data_frames['behavioral'].columns
+
+print("--- Aligning Matrices ---")
+# Reindex all other dataframes to match the behavioral dataframe's order
+data_frames['category'] = data_frames['category'].reindex(index=target_order, columns=target_cols)
+data_frames['animacy'] = data_frames['animacy'].reindex(index=target_order, columns=target_cols)
+data_frames['gist'] = data_frames['gist'].reindex(index=target_order, columns=target_cols)
+
+# Check for NaNs after reindexing (indicates mismatch in labels)
+if data_frames['gist'].isnull().values.any():
+    print("WARNING: NaN values found after alignment. Check if row labels match exactly between files.")
+    data_frames['gist'] = data_frames['gist'].fillna(0)
+
+# ==========================================
+# 4. VECTORIZE
+# ==========================================
+
+print("Vectorizing RDMs...")
+vec_beh = get_upper_tri(data_frames['behavioral'].values)
+vec_cat = get_upper_tri(data_frames['category'].values)
+vec_ani = get_upper_tri(data_frames['animacy'].values)
+vec_gist = get_upper_tri(data_frames['gist'].values)
+
+# ==========================================
+# 5. CALCULATE PARTIAL CORRELATIONS
+# ==========================================
+
+print("\n--- Calculating Partial Correlations ---")
+
+# A. Category Partial Correlation (Controlling for Animacy + GIST)
+controls_cat = np.column_stack([vec_ani, vec_gist])
+r_cat_partial, p_cat_partial = partial_corr(vec_beh, vec_cat, controls_cat)
+
+# B. Animacy Partial Correlation (Controlling for Category + GIST)
+controls_ani = np.column_stack([vec_cat, vec_gist])
+r_ani_partial, p_ani_partial = partial_corr(vec_beh, vec_ani, controls_ani)
+
+# C. GIST Partial Correlation (Controlling for Category + Animacy)
+controls_gist = np.column_stack([vec_cat, vec_ani])
+r_gist_partial, p_gist_partial = partial_corr(vec_beh, vec_gist, controls_gist)
+
+# ==========================================
+# 6. OUTPUT 
+# ==========================================
+
+def format_p(p):
+    return "< .001" if p < 0.001 else f"= {p:.3f}"
+
+print(f"1. Category Model (controlling for Animacy & GIST):")
+print(f"   r partial = {r_cat_partial:.2f}, p {format_p(p_cat_partial)}")
+
+print(f"\n2. Animacy Model (controlling for Category & GIST):")
+print(f"   r partial = {r_ani_partial:.2f}, p {format_p(p_ani_partial)}")
+
+print(f"\n3. GIST Model (controlling for Category & Animacy):")
+print(f"   r partial = {r_gist_partial:.2f}, p {format_p(p_gist_partial)}")
+
+# Commonality Analysis Helper
+print("\n(Use these values to fill in the [X] placeholders in your Results section.)")
